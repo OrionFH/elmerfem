@@ -282,6 +282,8 @@ MODULE Types
 #endif
 
   TYPE Matrix_t
+    ! PrecMatrix: matrix factorized by the "direct" preconditioner (VankaCreate.F90)
+    TYPE(Matrix_t), POINTER :: PrecMatrix => NULL()
     TYPE(Matrix_t), POINTER :: Child => NULL(), Parent => NULL(), CircuitMatrix => NULL(), &
         ConstraintMatrix=>NULL(), EMatrix=>NULL(), AddMatrix=>NULL(), CollectionMatrix=>NULL()
 

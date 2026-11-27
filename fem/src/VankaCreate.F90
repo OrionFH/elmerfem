@@ -1787,3 +1787,390 @@
 !> \}
 
 !> \}
+
+
+!------------------------------------------------------------------------------
+!> Set up (or refresh) the "direct" preconditioner: a direct factorization of a
+!> related matrix, used as preconditioner for a Krylov method on the full system.
+!>
+!> This makes sense when the preconditioning matrix differs from the system:
+!> - a real system with complex-linear 2x2 blocks plus a part that is not complex-linear,
+!>   e.g. the conjugate part of the exact Newton Jacobian of a time-harmonic problem.
+!>   The complex-linear part, x = (A11+A22)/2, y = (A21-A12)/2 for each block
+!>   [A11 A12; A21 A22], is factorized as a complex matrix (zmumps, cmumps).
+!> - the same matrix in lower precision (smumps for real, cmumps for complex systems).
+!> - a factorization that is kept over several solves while the matrix changes slowly
+!>   ('Linear System Preconditioning Refactorize Interval / Tolerance').
+!>
+!> Keywords (solver section):
+!>   Linear System Preconditioning = "direct"
+!>   Linear System Direct Method = zmumps | cmumps | smumps | dmumps | mumps | mumpslocal | umfpack ...
+!>   Linear System Preconditioning Complex = Logical  (force the complex-linear part)
+!>   Linear System Preconditioning Refactorize Interval = Integer  (default 1: every solve)
+!>   Linear System Preconditioning Refactorize Tolerance = Real  (refactorize only while the
+!>     nonlinear change is at least this; the first nonlinear iteration always refactorizes)
+!>   Linear System Preconditioning Refactorize Growth = Real  (default 2: refactorize anyway when a
+!>     solve with a reused factorization needed more than this times the iterations of the last
+!>     solve with a fresh one)
+!> Keywords starting with "mumps" are passed on to the direct solver.
+!------------------------------------------------------------------------------
+  SUBROUTINE DirectPrecCreate( A, Solver )
+!------------------------------------------------------------------------------
+    USE DefUtils
+    IMPLICIT NONE
+    TYPE(Matrix_t), TARGET :: A
+    TYPE(Solver_t) :: Solver
+!------------------------------------------------------------------------------
+    TYPE(Matrix_t), POINTER :: P, Owner
+    TYPE(Solver_t), POINTER :: sv
+    TYPE(ValueList_t), POINTER :: Params
+    TYPE(Variable_t), POINTER :: iterV
+    CHARACTER(:), ALLOCATABLE :: Method
+    LOGICAL :: Found, PrecComplex, Extract, Refact, NewMatrix, LastFresh
+    INTEGER :: Interval, Cnt, i, j, k, n, nnz, NonlinIter, Apps, FreshApps
+    INTEGER :: r, m, c, nCplx, ncol
+    INTEGER(KIND=8) :: Hash
+    INTEGER, ALLOCATABLE :: Mark(:), CList(:)
+    REAL(KIND=dp), ALLOCATABLE :: w1(:), w2(:)
+    REAL(KIND=dp) :: Tol, x, y, Growth
+    CHARACTER(*), PARAMETER :: Caller = 'DirectPrecCreate'
+!------------------------------------------------------------------------------
+    Params => Solver % Values
+
+    IF( ParEnv % PEs > 1 ) THEN
+      CALL Fatal(Caller,'The "direct" preconditioner is serial only so far!')
+    END IF
+    IF( A % FORMAT /= MATRIX_CRS ) THEN
+      CALL Fatal(Caller,'The "direct" preconditioner needs a CRS matrix!')
+    END IF
+
+    Method = ListGetString( Params,'Linear System Direct Method', Found )
+    IF(.NOT. Found ) Method = 'mumps'
+
+    SELECT CASE( Method )
+    CASE( 'zmumps', 'cmumps' )
+      PrecComplex = .TRUE.
+    CASE DEFAULT
+      PrecComplex = A % Complex
+    END SELECT
+    IF( ListGetLogical( Params,'Linear System Preconditioning Complex', Found ) ) PrecComplex = .TRUE.
+    Extract = PrecComplex .AND. .NOT. A % Complex
+
+    n = A % NumberOfRows
+    nnz = A % Rows(n+1) - 1
+    IF( Extract .AND. MOD(n,2) /= 0 ) CALL Fatal(Caller,'Complex-linear part needs an even number of rows!')
+
+    ! Fingerprint of the structure of A, to see whether it changed since the factorization
+    Hash = 0
+    DO i=1,n
+      DO j=A % Rows(i), A % Rows(i+1)-1
+        Hash = MOD( Hash * 31_8 + INT(A % Cols(j),8) * INT(i,8), 2305843009213693951_8 )
+      END DO
+    END DO
+
+    ! The preconditioner is kept with the solver's own matrix: A may be a temporary one built
+    ! for each solve (e.g. with circuits or constraints added), and the factorization should
+    ! survive it. The preconditioning matrix therefore owns copies of structure and values.
+    IF( ASSOCIATED( Solver % Matrix ) ) THEN
+      Owner => Solver % Matrix
+    ELSE
+      Owner => A
+    END IF
+
+    ! Do we need a new preconditioning matrix (first call or changed structure)?
+    P => Owner % PrecMatrix
+    NewMatrix = .NOT. ASSOCIATED( P )
+    IF( .NOT. NewMatrix ) THEN
+      NewMatrix = P % NumberOfRows /= n .OR. ( P % COMPLEX .NEQV. PrecComplex )
+      IF( .NOT. NewMatrix ) NewMatrix = ( ListGetInteger( P % Solver % Values,'Direct Prec Nnz', Found ) /= nnz )
+      IF( .NOT. NewMatrix ) NewMatrix = ( NINT( ListGetConstReal( P % Solver % Values,'Direct Prec Hash', Found ) ) &
+          /= INT( MOD( Hash, 1000000007_8 ) ) )
+      IF( NewMatrix ) THEN
+        CALL Info(Caller,'Matrix structure changed, starting over',Level=6)
+        CALL DirectPrecFree( Owner )
+        P => NULL()
+      END IF
+    END IF
+
+    IF( NewMatrix ) THEN
+      P => AllocateMatrix()
+      P % FORMAT = MATRIX_CRS
+      P % NumberOfRows = n
+      IF( Extract ) THEN
+        ! Structure of the complex matrix: every complex column that appears in either
+        ! row of a complex row, with both of its real columns, in both rows
+        nCplx = n / 2
+        ALLOCATE( Mark(nCplx), CList(nCplx) )
+        Mark = 0
+        ALLOCATE( P % Rows(n+1) )
+        P % Rows(1) = 1
+        DO r=1,nCplx
+          ncol = 0
+          DO i=2*r-1,2*r
+            DO j=A % Rows(i), A % Rows(i+1)-1
+              m = ( A % Cols(j) + 1 ) / 2
+              IF( Mark(m) /= r ) THEN
+                Mark(m) = r
+                ncol = ncol + 1
+              END IF
+            END DO
+          END DO
+          P % Rows(2*r)   = P % Rows(2*r-1) + 2*ncol
+          P % Rows(2*r+1) = P % Rows(2*r)   + 2*ncol
+        END DO
+        ALLOCATE( P % Cols( P % Rows(n+1)-1 ), P % Values( P % Rows(n+1)-1 ), P % Diag(n) )
+        P % Diag = 0
+        Mark = 0
+        DO r=1,nCplx
+          ncol = 0
+          DO i=2*r-1,2*r
+            DO j=A % Rows(i), A % Rows(i+1)-1
+              m = ( A % Cols(j) + 1 ) / 2
+              IF( Mark(m) /= r ) THEN
+                Mark(m) = r
+                ncol = ncol + 1
+                CList(ncol) = m
+              END IF
+            END DO
+          END DO
+          CALL Sort( ncol, CList )
+          DO i=2*r-1,2*r
+            k = P % Rows(i)
+            DO c=1,ncol
+              P % Cols(k)   = 2*CList(c)-1
+              P % Cols(k+1) = 2*CList(c)
+              IF( P % Cols(k) == i ) P % Diag(i) = k
+              IF( P % Cols(k+1) == i ) P % Diag(i) = k+1
+              k = k + 2
+            END DO
+          END DO
+        END DO
+        DEALLOCATE( Mark, CList )
+      ELSE
+        ALLOCATE( P % Rows(n+1), P % Cols(nnz), P % Diag(n), P % Values(nnz) )
+        P % Rows = A % Rows(1:n+1)
+        P % Cols = A % Cols(1:nnz)
+        P % Diag = A % Diag(1:n)
+      END IF
+      P % ExtraDOFs = A % ExtraDOFs
+      P % Comm = A % Comm
+      P % COMPLEX = PrecComplex
+      P % Symmetric = .FALSE.
+
+      ALLOCATE( sv )
+      CALL ListAddString( sv % Values,'Linear System Direct Method', Method )
+      CALL ListAddLogical( sv % Values,'Linear System Free Factorization', .FALSE. )
+      CALL ListCopyPrefixedKeywords( Params, sv % Values, 'linear system preconditioning direct' )
+      BLOCK
+        TYPE(ValueListEntry_t), POINTER :: ptr
+        ptr => Params % Head
+        DO WHILE( ASSOCIATED( ptr ) )
+          IF( ptr % NameLen > 5 ) THEN
+            IF( ptr % Name(1:5) == 'mumps' ) CALL ListCopyItem( ptr, sv % Values, ptr % Name(1:ptr % NameLen) )
+          END IF
+          ptr => ptr % Next
+        END DO
+      END BLOCK
+      P % Solver => sv
+      Owner % PrecMatrix => P
+      CALL ListAddInteger( sv % Values,'Direct Prec Nnz', nnz )
+      CALL ListAddConstReal( sv % Values,'Direct Prec Hash', REAL( MOD( Hash, 1000000007_8 ), dp ) )
+      Cnt = 0
+
+      IF( Extract ) THEN
+        CALL Info(Caller,'Preconditioning with the complex-linear part, method: '//Method,Level=5)
+      ELSE
+        CALL Info(Caller,'Preconditioning with the system matrix, method: '//Method,Level=5)
+      END IF
+    ELSE
+      sv => P % Solver
+      Cnt = ListGetInteger( sv % Values,'Direct Prec Count', Found )
+    END IF
+
+    ! Applications (= Krylov iterations) of the previous solve
+    Apps = ListGetInteger( sv % Values,'Direct Prec Applications', Found )
+    FreshApps = ListGetInteger( sv % Values,'Direct Prec Fresh Applications', Found )
+    LastFresh = ListGetLogical( sv % Values,'Direct Prec Last Fresh', Found )
+    IF( LastFresh ) FreshApps = Apps
+    CALL ListAddInteger( sv % Values,'Direct Prec Fresh Applications', FreshApps )
+    CALL ListAddInteger( sv % Values,'Direct Prec Applications', 0 )
+
+    ! Refactorize now?
+    Refact = NewMatrix
+    IF( .NOT. Refact ) THEN
+      Interval = ListGetInteger( Params,'Linear System Preconditioning Refactorize Interval', Found )
+      IF( .NOT. Found .OR. Interval < 1 ) Interval = 1
+      Refact = ( MOD( Cnt, Interval ) == 0 )
+
+      Tol = ListGetCReal( Params,'Linear System Preconditioning Refactorize Tolerance', Found )
+      IF( Found .AND. Refact ) THEN
+        NonlinIter = 0
+        iterV => VariableGet( Solver % Mesh % Variables, 'nonlin iter' )
+        IF( ASSOCIATED( iterV ) ) NonlinIter = NINT( iterV % Values(1) )
+        IF( NonlinIter > 1 .AND. ASSOCIATED( Solver % Variable ) ) THEN
+          IF( Solver % Variable % NonlinChange < Tol ) Refact = .FALSE.
+        END IF
+      END IF
+
+      ! The reused factorization did not do well enough last time
+      IF( .NOT. Refact .AND. .NOT. LastFresh ) THEN
+        Growth = ListGetCReal( Params,'Linear System Preconditioning Refactorize Growth', Found )
+        IF( .NOT. Found ) Growth = 2.0_dp
+        IF( Apps > Growth * MAX( FreshApps, 5 ) ) THEN
+          CALL Info(Caller,'Iterations grew from '//I2S(FreshApps)//' to '//I2S(Apps)//&
+              ', refactorizing',Level=6)
+          Refact = .TRUE.
+        END IF
+      END IF
+    END IF
+    CALL ListAddLogical( sv % Values,'Direct Prec Last Fresh', Refact )
+    Cnt = Cnt + 1
+    CALL ListAddInteger( sv % Values,'Direct Prec Count', Cnt )
+
+    IF( .NOT. Refact ) THEN
+      CALL Info(Caller,'Reusing the factorization',Level=6)
+      CALL ListAddLogical( sv % Values,'Linear System Refactorize', .FALSE. )
+      RETURN
+    END IF
+
+    IF( Extract ) THEN
+      ! Per 2x2 block [A11 A12; A21 A22] the complex-linear part is x + iy with
+      ! x = (A11+A22)/2, y = (A21-A12)/2, stored as [x -y; y x]. Missing entries count as zero.
+      ALLOCATE( w1(n), w2(n) )
+      w1 = 0.0_dp; w2 = 0.0_dp
+      DO i=1,n,2
+        DO j=A % Rows(i), A % Rows(i+1)-1
+          w1( A % Cols(j) ) = A % Values(j)
+        END DO
+        DO j=A % Rows(i+1), A % Rows(i+2)-1
+          w2( A % Cols(j) ) = A % Values(j)
+        END DO
+        k = P % Rows(i+1)
+        DO j=P % Rows(i), P % Rows(i+1)-1, 2
+          c = P % Cols(j)
+          x = 0.5_dp * ( w1(c) + w2(c+1) )
+          y = 0.5_dp * ( w2(c) - w1(c+1) )
+          P % Values(j)   =  x
+          P % Values(j+1) = -y
+          P % Values(k)   =  y
+          P % Values(k+1) =  x
+          k = k + 2
+        END DO
+        DO j=A % Rows(i), A % Rows(i+1)-1
+          w1( A % Cols(j) ) = 0.0_dp
+        END DO
+        DO j=A % Rows(i+1), A % Rows(i+2)-1
+          w2( A % Cols(j) ) = 0.0_dp
+        END DO
+      END DO
+      DEALLOCATE( w1, w2 )
+    ELSE
+      P % Values = A % Values(1:nnz)
+    END IF
+
+    CALL Info(Caller,'Factorization at next application',Level=6)
+    CALL ListAddLogical( sv % Values,'Linear System Refactorize', .TRUE. )
+!------------------------------------------------------------------------------
+  END SUBROUTINE DirectPrecCreate
+!------------------------------------------------------------------------------
+
+
+!------------------------------------------------------------------------------
+!> Release the "direct" preconditioner of matrix A.
+!------------------------------------------------------------------------------
+  SUBROUTINE DirectPrecFree( A )
+!------------------------------------------------------------------------------
+    USE DefUtils
+    IMPLICIT NONE
+    TYPE(Matrix_t) :: A
+    TYPE(Matrix_t), POINTER :: P
+    TYPE(Solver_t), POINTER :: sv
+    REAL(KIND=dp) :: x(1), b(1)
+
+    P => A % PrecMatrix
+    IF( .NOT. ASSOCIATED( P ) ) RETURN
+    A % PrecMatrix => NULL()
+    sv => P % Solver
+    CALL FreeMatrix( P )
+    IF( ASSOCIATED( sv ) ) DEALLOCATE( sv )
+!------------------------------------------------------------------------------
+  END SUBROUTINE DirectPrecFree
+!------------------------------------------------------------------------------
+
+
+!------------------------------------------------------------------------------
+!> Apply the "direct" preconditioner, real system: u = P^-1 v.
+!------------------------------------------------------------------------------
+  SUBROUTINE DirectPrec( u, v, ipar )
+!------------------------------------------------------------------------------
+    USE DefUtils
+    IMPLICIT NONE
+    INTEGER :: ipar(*)
+    REAL(KIND=dp) :: u(*), v(*)
+!------------------------------------------------------------------------------
+    TYPE(Matrix_t), POINTER :: A, P
+    TYPE(Solver_t), POINTER :: sv
+    LOGICAL :: Found
+    INTEGER :: n
+
+    A => GlobalMatrix
+    P => A % PrecMatrix
+    IF( .NOT. ASSOCIATED( P ) .AND. ASSOCIATED( CurrentModel % Solver % Matrix ) ) &
+        P => CurrentModel % Solver % Matrix % PrecMatrix
+    IF( .NOT. ASSOCIATED( P ) ) CALL Fatal('DirectPrec','Preconditioner not created!')
+    sv => P % Solver
+    n = ipar(3)
+    IF( n /= P % NumberOfRows ) CALL Fatal('DirectPrec','Size mismatch: '//I2S(n)//' vs '//I2S(P % NumberOfRows))
+
+    CALL DirectSolver( P, u(1:n), v(1:n), sv )
+    CALL ListAddInteger( sv % Values,'Direct Prec Applications', &
+        ListGetInteger( sv % Values,'Direct Prec Applications', Found ) + 1 )
+    ! factorized once, the following applications only solve
+    IF( ListGetLogical( sv % Values,'Linear System Refactorize', Found ) ) &
+        CALL ListAddLogical( sv % Values,'Linear System Refactorize', .FALSE. )
+!------------------------------------------------------------------------------
+  END SUBROUTINE DirectPrec
+!------------------------------------------------------------------------------
+
+
+!------------------------------------------------------------------------------
+!> Apply the "direct" preconditioner, complex system: u = P^-1 v.
+!------------------------------------------------------------------------------
+  SUBROUTINE DirectPrecComplex( u, v, ipar )
+!------------------------------------------------------------------------------
+    USE DefUtils
+    IMPLICIT NONE
+    INTEGER :: ipar(*)
+    COMPLEX(KIND=dp) :: u(*), v(*)
+!------------------------------------------------------------------------------
+    TYPE(Matrix_t), POINTER :: A, P
+    TYPE(Solver_t), POINTER :: sv
+    REAL(KIND=dp), ALLOCATABLE :: ru(:), rv(:)
+    LOGICAL :: Found
+    INTEGER :: i, n
+
+    A => GlobalMatrix
+    P => A % PrecMatrix
+    IF( .NOT. ASSOCIATED( P ) .AND. ASSOCIATED( CurrentModel % Solver % Matrix ) ) &
+        P => CurrentModel % Solver % Matrix % PrecMatrix
+    IF( .NOT. ASSOCIATED( P ) ) CALL Fatal('DirectPrecComplex','Preconditioner not created!')
+    sv => P % Solver
+    n = ipar(3)
+    IF( 2*n /= P % NumberOfRows ) CALL Fatal('DirectPrecComplex','Size mismatch!')
+
+    ALLOCATE( ru(2*n), rv(2*n) )
+    DO i=1,n
+      rv(2*i-1) = REAL( v(i) )
+      rv(2*i)   = AIMAG( v(i) )
+    END DO
+    CALL DirectSolver( P, ru, rv, sv )
+    CALL ListAddInteger( sv % Values,'Direct Prec Applications', &
+        ListGetInteger( sv % Values,'Direct Prec Applications', Found ) + 1 )
+    DO i=1,n
+      u(i) = CMPLX( ru(2*i-1), ru(2*i), KIND=dp )
+    END DO
+    IF( ListGetLogical( sv % Values,'Linear System Refactorize', Found ) ) &
+        CALL ListAddLogical( sv % Values,'Linear System Refactorize', .FALSE. )
+!------------------------------------------------------------------------------
+  END SUBROUTINE DirectPrecComplex
+!------------------------------------------------------------------------------

@@ -99,6 +99,20 @@ CONTAINS
 
      IF ( .NOT. ASSOCIATED( Matrix ) ) RETURN
 
+     ! Matrix of the "direct" preconditioner, with its own structure, values,
+     ! factorization and solver stand-in.
+     IF ( ASSOCIATED( Matrix % PrecMatrix ) ) THEN
+       BLOCK
+         TYPE(Matrix_t), POINTER :: P
+         TYPE(Solver_t), POINTER :: sv
+         P => Matrix % PrecMatrix
+         Matrix % PrecMatrix => NULL()
+         sv => P % Solver
+         CALL FreeMatrix( P )
+         IF ( ASSOCIATED( sv ) ) DEALLOCATE( sv )
+       END BLOCK
+     END IF
+
      ! DirectSolver takes Solver by value, so it must not be handed a
      ! disassociated pointer, and matrices with no solver attached do reach
      ! here. Every Free_Fact path deals with the matrix and returns without

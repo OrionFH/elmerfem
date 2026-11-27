@@ -34,9 +34,15 @@ Solver 1
   Nonlinear System Newton After Iterations = 0
   Harmonic Newton Exact = Logical True
 
-  ! the exact Newton system is solved as a real system (set by the solver)
-  Linear System Solver = Direct
-  Linear System Direct Method = MUMPS
+  ! the exact Newton system is real (set by the solver); GCR on it, preconditioned by a
+  ! complex factorization of its complex-linear part
+  Linear System Solver = Iterative
+  Linear System Iterative Method = GCR
+  Linear System GCR Restart = 300
+  Linear System Max Iterations = 500
+  Linear System Convergence Tolerance = 1.0e-8
+  Linear System Preconditioning = direct
+  Linear System Direct Method = zmumps
 End
 
 Solver 2

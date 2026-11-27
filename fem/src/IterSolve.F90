@@ -86,6 +86,7 @@ MODULE IterSolve
    INTEGER, PARAMETER, PRIVATE :: PRECOND_Vanka     =           560
    INTEGER, PARAMETER, PRIVATE :: PRECOND_Circuit   =           570
    INTEGER, PARAMETER, PRIVATE :: PRECOND_Slave     =           580
+   INTEGER, PARAMETER, PRIVATE :: PRECOND_Direct    =           590
 
    INTEGER, PARAMETER :: stack_max=64
    INTEGER :: stack_pos=0
@@ -709,6 +710,24 @@ END FUNCTION MaskedNorm
         REAL(KIND=dp) :: u(*),v(*)
       END SUBROUTINE SlavePrec
 
+      SUBROUTINE DirectPrecCreate(A,Solver)
+        USE Types
+        TYPE(Matrix_t), TARGET :: A
+        TYPE(Solver_t) :: Solver
+      END SUBROUTINE DirectPrecCreate
+
+      SUBROUTINE DirectPrec(u,v,ipar)
+        USE Types
+        INTEGER :: ipar(*)
+        REAL(KIND=dp) :: u(*),v(*)
+      END SUBROUTINE DirectPrec
+
+      SUBROUTINE DirectPrecComplex(u,v,ipar)
+        USE Types
+        INTEGER :: ipar(*)
+        COMPLEX(KIND=dp) :: u(*),v(*)
+      END SUBROUTINE DirectPrecComplex
+
       SUBROUTINE SlavePrecComplex(u,v,ipar)
         USE Types
         INTEGER :: ipar(*)
@@ -1103,12 +1122,20 @@ END FUNCTION MaskedNorm
         IF(.NOT.Gotit ) ILUn=-1
         PCondType = PRECOND_Circuit
 
+      ELSE IF ( str == 'direct' ) THEN
+        PCondType = PRECOND_Direct
+
       ELSE
         PCondType = PRECOND_NONE
         CALL Warn( 'IterSolve', 'Unknown preconditioner type: '//TRIM(str)//', feature disabled.' )
       END IF
 
-      IF ( .NOT. ListGetLogical( Params, 'No Precondition Recompute',GotIt ) ) THEN
+      ! The direct preconditioner decides itself when to refactorize.
+      IF ( PCondType == PRECOND_Direct ) THEN
+        CALL ResetTimer("Prec-"//TRIM(str))
+        CALL DirectPrecCreate( A, Solver )
+        CALL CheckTimer("Prec-"//TRIM(str),Level=8,Delete=.TRUE.)
+      ELSE IF ( .NOT. ListGetLogical( Params, 'No Precondition Recompute',GotIt ) ) THEN
         CALL ResetTimer("Prec-"//TRIM(str))
 
         n = ListGetInteger( Params, 'Linear System Precondition Recompute', GotIt )
@@ -1401,6 +1428,13 @@ END FUNCTION MaskedNorm
           pcondProc = AddrFunc( CircuitPrec )
         ELSE
           pcondProc = AddrFunc( CircuitPrecComplex )
+        END IF
+
+      CASE (PRECOND_Direct)
+        IF ( .NOT. ComplexSystem ) THEN
+          pcondProc = AddrFunc( DirectPrec )
+        ELSE
+          pcondProc = AddrFunc( DirectPrecComplex )
         END IF
 
       CASE DEFAULT
