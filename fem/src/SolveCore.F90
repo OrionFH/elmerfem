@@ -1258,6 +1258,7 @@ CONTAINS
     ELSE
       ComplexSystem = ListGetLogical( Params, 'Linear System Complex', GotIt )
       IF ( GotIt ) A % COMPLEX = ComplexSystem
+      IF( ListGetLogical( Params, 'Linear System Real Complex', GotIt ) ) A % RealComplex = .TRUE.
     END IF
 
     IF( ListGetLogical( Params,'Linear System Skip Scaling',GotIt ) ) THEN
@@ -5750,7 +5751,7 @@ RECURSIVE SUBROUTINE SolveWithLinearRestriction( StiffMatrix, ForceVector, &
   CollectionVector = 0.0_dp
   CollectionSolution = 0.0_dp
 
-  ComplexSystem = StiffMatrix % COMPLEX .OR. &
+  ComplexSystem = StiffMatrix % COMPLEX .OR. StiffMatrix % RealComplex .OR. &
       ListGetLogical(Params,'Linear System Complex', Found )
 
 !------------------------------------------------------------------------------
@@ -6093,6 +6094,7 @@ RECURSIVE SUBROUTINE SolveWithLinearRestriction( StiffMatrix, ForceVector, &
 !------------------------------------------------------------------------------
 
 ! Collectionmatrix % Complex = StiffMatrix % Complex
+  CollectionMatrix % RealComplex = StiffMatrix % RealComplex
 
 
   CollectionMatrix % Comm = StiffMatrix % Comm

@@ -134,23 +134,10 @@ CONTAINS
     IF( ListGetLogical( Solver % Values,'Linear System Pseudo Complex',Found ) ) THEN
       ComplexMatrix = .TRUE.
     ELSE
-      ComplexMatrix = A % COMPLEX
-    END IF
-
-    ! A real system preconditioned by a complex factorization ("direct" preconditioner, see
-    ! DirectPrecCreate): both rows of a complex dof must get the same scaling, otherwise the
-    ! scaled matrix no longer splits into a complex-linear and a conjugate part.
-    IF( .NOT. ComplexMatrix ) THEN
-      str = ListGetString( Solver % Values,'Linear System Preconditioning',Found )
-      IF( Found .AND. str == 'direct' ) THEN
-        IF( ListGetLogical( Solver % Values,'Linear System Preconditioning Complex',Found ) ) THEN
-          ComplexMatrix = .TRUE.
-        ELSE
-          str = ListGetString( Solver % Values,'Linear System Direct Method',Found )
-          ComplexMatrix = Found .AND. ( str == 'zmumps' .OR. str == 'cmumps' )
-        END IF
-        IF( ComplexMatrix .AND. MOD(n,2) /= 0 ) ComplexMatrix = .FALSE.
-      END IF
+      ! A real system with (re,im) pairs is scaled pairwise too: both rows of a pair must get
+      ! the same scaling, otherwise the scaled matrix no longer splits into a complex-linear
+      ! and a conjugate part (see the "direct" preconditioner).
+      ComplexMatrix = A % COMPLEX .OR. A % RealComplex
     END IF
 
     IF( PRESENT( ScalingStr ) ) THEN

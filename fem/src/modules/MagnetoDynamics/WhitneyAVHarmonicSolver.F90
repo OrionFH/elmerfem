@@ -74,11 +74,13 @@ SUBROUTINE WhitneyAVHarmonicSolver_Init0(Model,Solver,dt,Transient)
     CALL ListAddString( SolverParams, "Element", TRIM(ElemType) )
   END IF
 
-  ! The conjugate part of the exact Newton Jacobian is not complex-linear: the system is assembled as complex
-  ! but must be solved as a real system of twice the size.
+  ! The conjugate part of the exact Newton Jacobian is not complex-linear: the system is assembled
+  ! as complex but must be solved as a real system of twice the size.
   IF( ListGetLogical( SolverParams,'Harmonic Newton Exact', Found ) ) THEN
     CALL Info('WhitneyHarmonicSolver_Init0','Harmonic Newton Exact: solving the linear system as real')
     CALL ListAddLogical( SolverParams,'Linear System Complex',.FALSE.)
+    ! ... with (re,im) pairs of unknowns: keeps the pair structure, e.g. for constraints
+    CALL ListAddLogical( SolverParams,'Linear System Real Complex',.TRUE.)
   ELSE
     CALL ListAddNewLogical( SolverParams,'Linear System Complex',.TRUE.)
   END IF

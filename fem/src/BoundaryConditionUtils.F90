@@ -259,6 +259,7 @@ CONTAINS
       END IF
 
       M % COMPLEX = Base % COMPLEX
+      M % RealComplex = Base % RealComplex
       M % Parent => Base
       Base % Child => M
       IF( ALLOCATED( ConstRowTarget ) ) DEALLOCATE( ConstRowTarget, ConstRowScale, ConstRowKeep )

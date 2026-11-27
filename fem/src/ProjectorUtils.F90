@@ -639,7 +639,7 @@ CONTAINS
      END IF
 
 
-     ComplexMatrix = Solver % Matrix % Complex
+     ComplexMatrix = Solver % Matrix % Complex .OR. Solver % Matrix % RealComplex
      ComplexSumRow = .FALSE.
 
      IF( ComplexMatrix ) THEN
@@ -650,9 +650,6 @@ CONTAINS
        ! entries since it seems that we cannot rely on the flag to be set.
        ComplexMatrix = ListGetLogical( Solver % Values,'Linear System Complex',Found )
        IF( .NOT. Found ) ComplexMatrix = ( Dofs == 2*dim)
-       ! The exact Newton of the time-harmonic solvers solves a real system, but the
-       ! unknowns are still complex (real and imaginary part).
-       IF( ListGetLogical( Solver % Values,'Harmonic Newton Exact',Found ) ) ComplexMatrix = ( Dofs == 2 )
      END IF
 
      IF( ComplexMatrix ) THEN
@@ -1913,7 +1910,7 @@ CONTAINS
        END DO
      END IF
 
-     ComplexMatrix = Solver % Matrix % Complex
+     ComplexMatrix = Solver % Matrix % Complex .OR. Solver % Matrix % RealComplex
      IF( ComplexMatrix ) THEN
        IF( MODULO( Dofs,2 ) /= 0 ) CALL Fatal(Caller,&
            'Complex matrix should have even number of components!')
@@ -1922,9 +1919,6 @@ CONTAINS
        ! entries since it seems that we cannot rely on the flag to be set.
        ComplexMatrix = ListGetLogical( Solver % Values,'Linear System Complex',Found )
        IF( .NOT. Found ) ComplexMatrix = ( Dofs == 2*dim)
-       ! The exact Newton of the time-harmonic solvers solves a real system, but the
-       ! unknowns are still complex (real and imaginary part).
-       IF( ListGetLogical( Solver % Values,'Harmonic Newton Exact',Found ) ) ComplexMatrix = ( Dofs == 2 )
      END IF
 
      IF( ComplexMatrix ) THEN

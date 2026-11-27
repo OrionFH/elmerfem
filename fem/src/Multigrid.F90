@@ -1168,6 +1168,7 @@ CONTAINS
            DO l=level-1,1,-1
              Matrix2 => AllocateMatrix()
              Matrix2 % Complex = Matrix1 % Complex
+             Matrix2 % RealComplex = Matrix1 % RealComplex
              Matrix2 % Parent => Pmatrix
              Pmatrix % Child  => Matrix2
              n2 = COUNT(Degree<=PatLevel(l))

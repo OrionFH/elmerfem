@@ -327,6 +327,7 @@ if ( .not. add ) zz=zz+1
 !------------------------------------------------------------------------------
   Bmatrix % Lumped    = A % Lumped
   Bmatrix % Complex   = A % Complex
+  Bmatrix % RealComplex = A % RealComplex
   Bmatrix % Symmetric = A % Symmetric
 
 !print*,k, size(a % values), a % numberofrows, bmatrix % numberofrows

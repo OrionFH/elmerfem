@@ -63,6 +63,68 @@ MODULE DirectSolve
 
 CONTAINS
 
+!------------------------------------------------------------------------------
+!> Complex coefficient of the 2x2 block at position j (odd column) of the odd row i of
+!> the real representation of a complex matrix. A truly complex matrix stores [x -y; y x],
+!> read from the odd row only. A real matrix with (re,im) pairs (A % RealComplex) has a
+!> general block [A11 A12; A21 A22]; its complex-linear part x = (A11+A22)/2,
+!> y = (A21-A12)/2 is returned, the conjugate part (A11-A22)/2, (A12+A21)/2 is dropped.
+!> This needs the same sparsity pattern in both rows of a pair, see CheckPairPattern.
+!------------------------------------------------------------------------------
+  FUNCTION MatrixComplexEntry( A, i, j ) RESULT( z )
+!------------------------------------------------------------------------------
+    TYPE(Matrix_t) :: A
+    INTEGER :: i, j
+    COMPLEX(KIND=dp) :: z
+    INTEGER :: k
+
+    IF( A % RealComplex .AND. .NOT. A % COMPLEX ) THEN
+      k = A % Rows(i+1) + j - A % Rows(i)
+      z = CMPLX( 0.5_dp * ( A % Values(j) + A % Values(k+1) ), &
+                 0.5_dp * ( A % Values(k) - A % Values(j+1) ), KIND=dp )
+    ELSE
+      z = CMPLX( A % Values(j), -A % Values(j+1), KIND=dp )
+    END IF
+!------------------------------------------------------------------------------
+  END FUNCTION MatrixComplexEntry
+!------------------------------------------------------------------------------
+
+
+!------------------------------------------------------------------------------
+!> A real matrix with (re,im) pairs can be factorized as a complex matrix only if
+!> both rows of each pair have the same columns, and the columns come in pairs.
+!------------------------------------------------------------------------------
+  SUBROUTINE CheckPairPattern( A, Caller )
+!------------------------------------------------------------------------------
+    TYPE(Matrix_t) :: A
+    CHARACTER(*) :: Caller
+    INTEGER :: i, j, k, n
+    LOGICAL :: Ok
+
+    IF( .NOT. A % RealComplex .OR. A % COMPLEX ) RETURN
+    n = A % NumberOfRows
+    Ok = ( MOD(n,2) == 0 )
+    DO i=1,n-1,2
+      IF( .NOT. Ok ) EXIT
+      IF( A % Rows(i+1)-A % Rows(i) /= A % Rows(i+2)-A % Rows(i+1) .OR. &
+          MOD( A % Rows(i+1)-A % Rows(i), 2 ) /= 0 ) THEN
+        Ok = .FALSE.; EXIT
+      END IF
+      k = A % Rows(i+1)
+      DO j=A % Rows(i), A % Rows(i+1)-1, 2
+        IF( MOD( A % Cols(j), 2 ) /= 1 .OR. A % Cols(j+1) /= A % Cols(j)+1 .OR. &
+            A % Cols(k) /= A % Cols(j) .OR. A % Cols(k+1) /= A % Cols(j+1) ) THEN
+          Ok = .FALSE.; EXIT
+        END IF
+        k = k + 2
+      END DO
+    END DO
+    IF( .NOT. Ok ) CALL Fatal( Caller, 'Real matrix with (re,im) pairs has an incomplete '//&
+        '2x2 pair structure, cannot form its complex-linear part!' )
+!------------------------------------------------------------------------------
+  END SUBROUTINE CheckPairPattern
+!------------------------------------------------------------------------------
+
 
 !------------------------------------------------------------------------------
 !> Solver the complex linear system using direct band matrix solver from of Lapack.
@@ -795,7 +857,7 @@ CONTAINS
         DO j=A % Rows(i),A % Rows(i+1)-1,2
           k = k + 1
           ZCols(k) = A % Cols(j)/2 + 1
-          ZVals(k) = CMPLX( A % Values(j), -A % Values(j+1), KIND=dp )
+          ZVals(k) = MatrixComplexEntry( A, i, j )
         END DO
         ZRows(ip+1) = k + 1
       END DO
@@ -2584,7 +2646,7 @@ CONTAINS
           nzloc = nzloc + 1
           A % CMumpsID % irn(nzloc) = ip
           A % CMumpsID % jcn(nzloc) = A % Cols(j)/2 + 1
-          A % CMumpsID % A(nzloc)   = CMPLX( A % Values(j), -A % Values(j+1) )
+          A % CMumpsID % A(nzloc)   = MatrixComplexEntry( A, i, j )
         END DO
       END DO
 
@@ -2605,7 +2667,7 @@ CONTAINS
             nzloc = nzloc + 1
             A % CMumpsID % irn_loc(nzloc) = ip
             A % CMumpsID % jcn_loc(nzloc) = (A % Gorder(A % Cols(j))-1)/2+1
-            A % CMumpsID % a_loc(nzloc)   = CMPLX( A % Values(j), -A % Values(j+1) )
+            A % CMumpsID % a_loc(nzloc)   = MatrixComplexEntry( A, i, j )
           END DO
         END DO
       ELSE
@@ -3197,7 +3259,7 @@ CONTAINS
           nzloc = nzloc + 1
           A % ZMumpsID % irn(nzloc) = ip
           A % ZMumpsID % jcn(nzloc) = A % Cols(j)/2 + 1
-          A % ZMumpsID % A(nzloc)   = CMPLX( A % Values(j), -A % Values(j+1), KIND=dp)
+          A % ZMumpsID % A(nzloc)   = MatrixComplexEntry( A, i, j )
         END DO
       END DO
 
@@ -3218,7 +3280,7 @@ CONTAINS
             nzloc = nzloc + 1
             A % ZMumpsID % irn_loc(nzloc) = ip
             A % ZMumpsID % jcn_loc(nzloc) = (A % Gorder(A % Cols(j))-1)/2+1
-            A % ZMumpsID % a_loc(nzloc)   = CMPLX( A % Values(j), -A % Values(j+1), KIND=dp)
+            A % ZMumpsID % a_loc(nzloc)   = MatrixComplexEntry( A, i, j )
           END DO
         END DO
       ELSE
@@ -3238,7 +3300,7 @@ CONTAINS
             nzloc = nzloc + 1
             A % ZmumpsID % IRN_loc(nzloc) = (A % Gorder(i)-1)/2+1
             A % ZmumpsID % JCN_loc(nzloc) = (A % Gorder(A % Cols(j))-1)/2+1
-            A % ZmumpsID % A_loc(nzloc) = CMPLX( A % Values(j), -A % Values(j+1), KIND=dp)
+            A % ZmumpsID % A_loc(nzloc) = MatrixComplexEntry( A, i, j )
           END DO
         END DO
       END IF
@@ -3851,7 +3913,7 @@ CONTAINS
          DO j=A % Rows(i),A % Rows(i+1)-1,2
            nzloc = nzloc + 1
            A % ZmumpsIDL % JCN(nzloc) = A % Cols(j)/2+1
-           A % ZmumpsIDL % A(nzloc) = CMPLX(A % Values(j), -A % Values(j+1), KIND=dp )
+           A % ZmumpsIDL % A(nzloc) = MatrixComplexEntry( A, i, j )
          END DO
        END DO
     ELSE
@@ -3864,7 +3926,7 @@ CONTAINS
             nzloc = nzloc + 1
             A % ZmumpsIDL % IRN(nzloc) = i/2+1
             A % ZmumpsIDL % JCN(nzloc) = A % Cols(j)/2+1
-            A % ZmumpsIDL % A(nzloc) = CMPLX(A % Values(j), -A % Values(j+1),KIND=dp)
+            A % ZmumpsIDL % A(nzloc) = MatrixComplexEntry( A, i, j )
           END IF
         END DO
       END DO
@@ -5210,6 +5272,15 @@ CONTAINS
     END IF
 #endif
 
+    ! A real matrix with (re,im) pairs, factorized as complex: only its complex-linear part is
+    ! taken, which makes sense as a preconditioner (see DirectPrecCreate), not as a solver.
+    IF( A % RealComplex .AND. .NOT. A % Complex ) THEN
+      IF( Method == 'cmumps' .OR. Method == 'zmumps' .OR. Method == 'zmumpslocal' ) THEN
+        CALL CheckPairPattern( A, 'DirectSolver' )
+        CALL Info('DirectSolver','Factorizing the complex-linear part of a real system',Level=10)
+      END IF
+    END IF
+
     SELECT CASE(Method)
       CASE( 'banded', 'symmetric banded' )
         IF ( .NOT. A % Complex ) THEN
@@ -5228,21 +5299,21 @@ CONTAINS
         CALL SPQR_SolveSystem( Solver, A, x, b )
 
       CASE( 'smumps', 'cmumps' )
-        IF( A % Complex ) THEN
+        IF( A % Complex .OR. ( A % RealComplex .AND. Method == 'cmumps' ) ) THEN
           CALL CMumps_SolveSystem( Solver, A, x, b )
         ELSE
           CALL SMumps_SolveSystem( Solver, A, x, b )
         END IF
 
       CASE( 'mumps', 'dmumps', 'zmumps' )
-        IF( A % Complex ) THEN
+        IF( A % Complex .OR. ( A % RealComplex .AND. Method == 'zmumps' ) ) THEN
           CALL ZMumps_SolveSystem( Solver, A, x, b )
         ELSE
           CALL Mumps_SolveSystem( Solver, A, x, b )
         END IF
 
-      CASE( 'mumpslocal' )
-        IF( A % Complex ) THEN
+      CASE( 'mumpslocal', 'zmumpslocal' )
+        IF( A % Complex .OR. ( A % RealComplex .AND. Method == 'zmumpslocal' ) ) THEN
           CALL ZMumpsLocal_SolveSystem( Solver, A, x, b )
         ELSE
           CALL MumpsLocal_SolveSystem( Solver, A, x, b )

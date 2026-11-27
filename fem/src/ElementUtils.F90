@@ -99,15 +99,21 @@ CONTAINS
 
      IF ( .NOT. ASSOCIATED( Matrix ) ) RETURN
 
-     ! Matrix of the "direct" preconditioner, with its own structure, values,
-     ! factorization and solver stand-in.
+     ! Matrix of the "direct" preconditioner, with its factorization and solver stand-in.
+     ! Its structure and values are either its own or those of this matrix ('Direct Prec Alias').
      IF ( ASSOCIATED( Matrix % PrecMatrix ) ) THEN
        BLOCK
          TYPE(Matrix_t), POINTER :: P
          TYPE(Solver_t), POINTER :: sv
+         LOGICAL :: GotIt
          P => Matrix % PrecMatrix
          Matrix % PrecMatrix => NULL()
          sv => P % Solver
+         IF ( ASSOCIATED( sv ) ) THEN
+           IF ( ListGetLogical( sv % Values,'Direct Prec Alias', GotIt ) ) THEN
+             P % Rows => NULL(); P % Cols => NULL(); P % Diag => NULL(); P % Values => NULL()
+           END IF
+         END IF
          CALL FreeMatrix( P )
          IF ( ASSOCIATED( sv ) ) DEALLOCATE( sv )
        END BLOCK

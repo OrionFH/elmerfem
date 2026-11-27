@@ -1794,18 +1794,19 @@
 !> related matrix, used as preconditioner for a Krylov method on the full system.
 !>
 !> This makes sense when the preconditioning matrix differs from the system:
-!> - a real system with complex-linear 2x2 blocks plus a part that is not complex-linear,
-!>   e.g. the conjugate part of the exact Newton Jacobian of a time-harmonic problem.
-!>   The complex-linear part, x = (A11+A22)/2, y = (A21-A12)/2 for each block
-!>   [A11 A12; A21 A22], is factorized as a complex matrix (zmumps, cmumps).
+!> - a real system with (re,im) pairs of unknowns (A % RealComplex, 'Linear System Real
+!>   Complex'), e.g. the exact Newton Jacobian of a time-harmonic problem with its conjugate
+!>   part. A complex method (zmumps, cmumps, zmumpslocal) factorizes the complex-linear part,
+!>   x = (A11+A22)/2, y = (A21-A12)/2 for each block [A11 A12; A21 A22]; the MUMPS interfaces
+!>   form it directly from the real matrix (MatrixComplexEntry in DirectSolve).
 !> - the same matrix in lower precision (smumps for real, cmumps for complex systems).
 !> - a factorization that is kept over several solves while the matrix changes slowly
 !>   ('Linear System Preconditioning Refactorize Interval / Tolerance').
 !>
 !> Keywords (solver section):
 !>   Linear System Preconditioning = "direct"
-!>   Linear System Direct Method = zmumps | cmumps | smumps | dmumps | mumps | mumpslocal | umfpack ...
-!>   Linear System Preconditioning Complex = Logical  (force the complex-linear part)
+!>   Linear System Direct Method = zmumps | cmumps | smumps | dmumps | mumps | mumpslocal |
+!>     zmumpslocal | umfpack ...
 !>   Linear System Preconditioning Refactorize Interval = Integer  (default 1: every solve)
 !>   Linear System Preconditioning Refactorize Tolerance = Real  (refactorize only while the
 !>     nonlinear change is at least this; the first nonlinear iteration always refactorizes)
@@ -1826,13 +1827,10 @@
     TYPE(ValueList_t), POINTER :: Params
     TYPE(Variable_t), POINTER :: iterV
     CHARACTER(:), ALLOCATABLE :: Method
-    LOGICAL :: Found, PrecComplex, Extract, Refact, NewMatrix, LastFresh
-    INTEGER :: Interval, Cnt, i, j, k, n, nnz, NonlinIter, Apps, FreshApps
-    INTEGER :: r, m, c, nCplx, ncol
+    LOGICAL :: Found, PrecComplex, Alias, Refact, NewMatrix, LastFresh
+    INTEGER :: Interval, Cnt, i, j, n, nnz, NonlinIter, Apps, FreshApps
     INTEGER(KIND=8) :: Hash
-    INTEGER, ALLOCATABLE :: Mark(:), CList(:)
-    REAL(KIND=dp), ALLOCATABLE :: w1(:), w2(:)
-    REAL(KIND=dp) :: Tol, x, y, Growth
+    REAL(KIND=dp) :: Tol, Growth
     CHARACTER(*), PARAMETER :: Caller = 'DirectPrecCreate'
 !------------------------------------------------------------------------------
     Params => Solver % Values
@@ -1847,18 +1845,14 @@
     Method = ListGetString( Params,'Linear System Direct Method', Found )
     IF(.NOT. Found ) Method = 'mumps'
 
-    SELECT CASE( Method )
-    CASE( 'zmumps', 'cmumps' )
-      PrecComplex = .TRUE.
-    CASE DEFAULT
-      PrecComplex = A % Complex
-    END SELECT
-    IF( ListGetLogical( Params,'Linear System Preconditioning Complex', Found ) ) PrecComplex = .TRUE.
-    Extract = PrecComplex .AND. .NOT. A % Complex
+    ! A real system with (re,im) pairs (A % RealComplex) factorized by a complex method: the
+    ! factorization takes the complex-linear part of each 2x2 block (see MatrixComplexEntry).
+    PrecComplex = A % COMPLEX
+    IF( A % RealComplex ) PrecComplex = ( Method == 'zmumps' .OR. Method == 'cmumps' .OR. &
+        Method == 'zmumpslocal' )
 
     n = A % NumberOfRows
     nnz = A % Rows(n+1) - 1
-    IF( Extract .AND. MOD(n,2) /= 0 ) CALL Fatal(Caller,'Complex-linear part needs an even number of rows!')
 
     ! Fingerprint of the structure of A, to see whether it changed since the factorization
     Hash = 0
@@ -1868,20 +1862,26 @@
       END DO
     END DO
 
-    ! The preconditioner is kept with the solver's own matrix: A may be a temporary one built
-    ! for each solve (e.g. with circuits or constraints added), and the factorization should
-    ! survive it. The preconditioning matrix therefore owns copies of structure and values.
+    ! The preconditioner is kept with the solver's own matrix. If A is that matrix, the
+    ! preconditioning matrix shares its structure and values (the factorization is made from
+    ! the values at that time, MUMPS keeps its own copy). If A is a temporary one built for
+    ! each solve (e.g. with circuits or constraints added), the preconditioning matrix owns
+    ! copies, so that the factorization survives.
     IF( ASSOCIATED( Solver % Matrix ) ) THEN
       Owner => Solver % Matrix
     ELSE
       Owner => A
     END IF
+    Alias = ASSOCIATED( Owner, A )
 
     ! Do we need a new preconditioning matrix (first call or changed structure)?
     P => Owner % PrecMatrix
     NewMatrix = .NOT. ASSOCIATED( P )
     IF( .NOT. NewMatrix ) THEN
-      NewMatrix = P % NumberOfRows /= n .OR. ( P % COMPLEX .NEQV. PrecComplex )
+      NewMatrix = P % NumberOfRows /= n .OR. ( P % COMPLEX .NEQV. A % COMPLEX ) .OR. &
+          ( P % RealComplex .NEQV. A % RealComplex ) .OR. &
+          ( Alias .NEQV. ListGetLogical( P % Solver % Values,'Direct Prec Alias', Found ) )
+      IF( .NOT. NewMatrix .AND. Alias ) NewMatrix = .NOT. ASSOCIATED( P % Values, A % Values )
       IF( .NOT. NewMatrix ) NewMatrix = ( ListGetInteger( P % Solver % Values,'Direct Prec Nnz', Found ) /= nnz )
       IF( .NOT. NewMatrix ) NewMatrix = ( NINT( ListGetConstReal( P % Solver % Values,'Direct Prec Hash', Found ) ) &
           /= INT( MOD( Hash, 1000000007_8 ) ) )
@@ -1896,56 +1896,11 @@
       P => AllocateMatrix()
       P % FORMAT = MATRIX_CRS
       P % NumberOfRows = n
-      IF( Extract ) THEN
-        ! Structure of the complex matrix: every complex column that appears in either
-        ! row of a complex row, with both of its real columns, in both rows
-        nCplx = n / 2
-        ALLOCATE( Mark(nCplx), CList(nCplx) )
-        Mark = 0
-        ALLOCATE( P % Rows(n+1) )
-        P % Rows(1) = 1
-        DO r=1,nCplx
-          ncol = 0
-          DO i=2*r-1,2*r
-            DO j=A % Rows(i), A % Rows(i+1)-1
-              m = ( A % Cols(j) + 1 ) / 2
-              IF( Mark(m) /= r ) THEN
-                Mark(m) = r
-                ncol = ncol + 1
-              END IF
-            END DO
-          END DO
-          P % Rows(2*r)   = P % Rows(2*r-1) + 2*ncol
-          P % Rows(2*r+1) = P % Rows(2*r)   + 2*ncol
-        END DO
-        ALLOCATE( P % Cols( P % Rows(n+1)-1 ), P % Values( P % Rows(n+1)-1 ), P % Diag(n) )
-        P % Diag = 0
-        Mark = 0
-        DO r=1,nCplx
-          ncol = 0
-          DO i=2*r-1,2*r
-            DO j=A % Rows(i), A % Rows(i+1)-1
-              m = ( A % Cols(j) + 1 ) / 2
-              IF( Mark(m) /= r ) THEN
-                Mark(m) = r
-                ncol = ncol + 1
-                CList(ncol) = m
-              END IF
-            END DO
-          END DO
-          CALL Sort( ncol, CList )
-          DO i=2*r-1,2*r
-            k = P % Rows(i)
-            DO c=1,ncol
-              P % Cols(k)   = 2*CList(c)-1
-              P % Cols(k+1) = 2*CList(c)
-              IF( P % Cols(k) == i ) P % Diag(i) = k
-              IF( P % Cols(k+1) == i ) P % Diag(i) = k+1
-              k = k + 2
-            END DO
-          END DO
-        END DO
-        DEALLOCATE( Mark, CList )
+      IF( Alias ) THEN
+        P % Rows => A % Rows
+        P % Cols => A % Cols
+        P % Diag => A % Diag
+        P % Values => A % Values
       ELSE
         ALLOCATE( P % Rows(n+1), P % Cols(nnz), P % Diag(n), P % Values(nnz) )
         P % Rows = A % Rows(1:n+1)
@@ -1954,7 +1909,8 @@
       END IF
       P % ExtraDOFs = A % ExtraDOFs
       P % Comm = A % Comm
-      P % COMPLEX = PrecComplex
+      P % COMPLEX = A % COMPLEX
+      P % RealComplex = A % RealComplex
       P % Symmetric = .FALSE.
 
       ALLOCATE( sv )
@@ -1974,10 +1930,11 @@
       P % Solver => sv
       Owner % PrecMatrix => P
       CALL ListAddInteger( sv % Values,'Direct Prec Nnz', nnz )
+      CALL ListAddLogical( sv % Values,'Direct Prec Alias', Alias )
       CALL ListAddConstReal( sv % Values,'Direct Prec Hash', REAL( MOD( Hash, 1000000007_8 ), dp ) )
       Cnt = 0
 
-      IF( Extract ) THEN
+      IF( A % RealComplex .AND. PrecComplex .AND. .NOT. A % COMPLEX ) THEN
         CALL Info(Caller,'Preconditioning with the complex-linear part, method: '//Method,Level=5)
       ELSE
         CALL Info(Caller,'Preconditioning with the system matrix, method: '//Method,Level=5)
@@ -2033,40 +1990,7 @@
       RETURN
     END IF
 
-    IF( Extract ) THEN
-      ! Per 2x2 block [A11 A12; A21 A22] the complex-linear part is x + iy with
-      ! x = (A11+A22)/2, y = (A21-A12)/2, stored as [x -y; y x]. Missing entries count as zero.
-      ALLOCATE( w1(n), w2(n) )
-      w1 = 0.0_dp; w2 = 0.0_dp
-      DO i=1,n,2
-        DO j=A % Rows(i), A % Rows(i+1)-1
-          w1( A % Cols(j) ) = A % Values(j)
-        END DO
-        DO j=A % Rows(i+1), A % Rows(i+2)-1
-          w2( A % Cols(j) ) = A % Values(j)
-        END DO
-        k = P % Rows(i+1)
-        DO j=P % Rows(i), P % Rows(i+1)-1, 2
-          c = P % Cols(j)
-          x = 0.5_dp * ( w1(c) + w2(c+1) )
-          y = 0.5_dp * ( w2(c) - w1(c+1) )
-          P % Values(j)   =  x
-          P % Values(j+1) = -y
-          P % Values(k)   =  y
-          P % Values(k+1) =  x
-          k = k + 2
-        END DO
-        DO j=A % Rows(i), A % Rows(i+1)-1
-          w1( A % Cols(j) ) = 0.0_dp
-        END DO
-        DO j=A % Rows(i+1), A % Rows(i+2)-1
-          w2( A % Cols(j) ) = 0.0_dp
-        END DO
-      END DO
-      DEALLOCATE( w1, w2 )
-    ELSE
-      P % Values = A % Values(1:nnz)
-    END IF
+    IF( .NOT. Alias ) P % Values = A % Values(1:nnz)
 
     CALL Info(Caller,'Factorization at next application',Level=6)
     CALL ListAddLogical( sv % Values,'Linear System Refactorize', .TRUE. )
@@ -2085,12 +2009,18 @@
     TYPE(Matrix_t) :: A
     TYPE(Matrix_t), POINTER :: P
     TYPE(Solver_t), POINTER :: sv
-    REAL(KIND=dp) :: x(1), b(1)
+    LOGICAL :: Found
 
     P => A % PrecMatrix
     IF( .NOT. ASSOCIATED( P ) ) RETURN
     A % PrecMatrix => NULL()
     sv => P % Solver
+    IF( ASSOCIATED( sv ) ) THEN
+      IF( ListGetLogical( sv % Values,'Direct Prec Alias', Found ) ) THEN
+        ! structure and values belong to the system matrix
+        P % Rows => NULL(); P % Cols => NULL(); P % Diag => NULL(); P % Values => NULL()
+      END IF
+    END IF
     CALL FreeMatrix( P )
     IF( ASSOCIATED( sv ) ) DEALLOCATE( sv )
 !------------------------------------------------------------------------------

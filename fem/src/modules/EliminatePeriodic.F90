@@ -296,6 +296,7 @@ INTEGER FUNCTION EliminatePeriodic( Model, Solver, A, b, x, n, DOFs, Norm )
 !------------------------------------------------------------------------------
   RedA % Lumped    = A % Lumped
   RedA % COMPLEX   = A % COMPLEX
+  RedA % RealComplex = A % RealComplex
   RedA % Symmetric = A % Symmetric
 
   at = CPUtime()

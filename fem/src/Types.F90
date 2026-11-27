@@ -300,6 +300,10 @@ MODULE Types
 
     INTEGER :: Subband, FORMAT, SolveCount, Comm=-1
     LOGICAL :: Ordered, Lumped, Symmetric, COMPLEX, DGMatrix, Cholesky
+    ! Real matrix whose unknowns come in (re,im) pairs, e.g. the real form of a complex
+    ! problem with a conj() term. Keeps the 2x2 pair structure like COMPLEX does; only the
+    ! linear solvers differ (a complex factorization takes the complex-linear part).
+    LOGICAL :: RealComplex = .FALSE.
 
     INTEGER :: ProjectorBC,ProjectorType
 

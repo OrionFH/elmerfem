@@ -2605,6 +2605,7 @@ RECURSIVE SUBROUTINE SolveHutiter( SourceMatrix, SplittedMatrix, ParallelInfo, &
 
   GlobalMatrix % Ematrix => SourceMatrix
   GlobalMatrix % COMPLEX = SourceMatrix % COMPLEX
+  GlobalMatrix % RealComplex = SourceMatrix % RealComplex
 
  !----------------------------------------------------------------------
  ! Set up the preconditioner

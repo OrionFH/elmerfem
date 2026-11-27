@@ -1689,11 +1689,13 @@ SUBROUTINE MagnetoDynamics2DHarmonic_Init0( Model,Solver,dt,Transient )
   Params => GetSolverParams(Solver)
   CALL ListAddNewLogical( Params, 'Apply Mortar BCs', .TRUE.)
 
-  ! The conjugate part of the exact Newton Jacobian is not complex-linear: the system is assembled as complex
-  ! but must be solved as a real system of twice the size.
+  ! The conjugate part of the exact Newton Jacobian is not complex-linear: the system is assembled
+  ! as complex but must be solved as a real system of twice the size.
   IF( ListGetLogical( Params,'Harmonic Newton Exact', Found ) ) THEN
     CALL Info('MagnetoDynamics2DHarmonic_Init0','Harmonic Newton Exact: solving the linear system as real')
     CALL ListAddLogical( Params,'Linear System Complex',.FALSE.)
+    ! ... with (re,im) pairs of unknowns: keeps the pair structure, e.g. for constraints
+    CALL ListAddLogical( Params,'Linear System Real Complex',.TRUE.)
   ELSE
     CALL ListAddNewLogical( Params,'Linear System Complex',.TRUE.)
   END IF

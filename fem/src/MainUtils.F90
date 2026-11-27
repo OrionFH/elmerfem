@@ -1799,6 +1799,8 @@ CONTAINS
         IF (ASSOCIATED(Solver % Matrix)) THEN
           Nrows = Solver % Matrix % NumberOfRows
           CALL Info(Caller,'Number of rows in CRS matrix: '//I2S(Nrows),Level=12)
+          ! Real system with (re,im) pairs of unknowns, e.g. the real form of a complex problem
+          Solver % Matrix % RealComplex = ListGetLogical( Solver % Values,'Linear System Real Complex', Found )
         END IF
 
         ! Check if mesh colouring is needed by the solver
